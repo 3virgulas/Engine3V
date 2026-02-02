@@ -446,17 +446,48 @@ class TwelveDataClient:
         
         return patterns
     
-    async def get_technical_analysis(self) -> dict[str, Any]:
+    async def get_technical_analysis(
+        self,
+        symbol: str | None = None,
+        interval: str = "5min",
+        outputsize: int = 200
+    ) -> dict[str, Any]:
         """
         Executa análise técnica completa para o @Quant_Analyst.
+        
+        Args:
+            symbol: Par de moedas (ex: EURUSD). Default: configuração global
+            interval: Timeframe (1min, 5min, 15min, 1h, 4h)
+            outputsize: Quantidade de candles
         
         Returns:
             Dict com todos os indicadores e padrões
         """
-        log_agent_action("@TwelveData", "Running full technical analysis")
+        # Permite override do símbolo para multi-pair scanner
+        target_symbol = symbol or self._symbol.replace("/", "")
         
-        # Obtém dados de preço
-        df = await self.get_price_data(interval="5min", outputsize=200)
+        log_agent_action("@TwelveData", "Running full technical analysis", {
+            "symbol": target_symbol,
+            "interval": interval
+        })
+        
+        # Obtém dados de preço com símbolo customizado
+        data = await self._request("time_series", {
+            "symbol": target_symbol if "/" not in target_symbol else target_symbol,
+            "interval": interval,
+            "outputsize": outputsize,
+            "timezone": "America/Sao_Paulo"
+        })
+        
+        if "values" not in data:
+            raise ValueError(f"Erro ao obter dados: {data.get('message', 'Unknown error')}")
+        
+        df = pd.DataFrame(data["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        for col in ["open", "high", "low", "close"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.sort_values("datetime").reset_index(drop=True)
+        
         current_price = df["close"].iloc[-1]
         
         # Calcula indicadores
@@ -466,9 +497,15 @@ class TwelveDataClient:
         patterns = self.identify_candlestick_patterns(df)
         atr = self.calculate_atr(df)  # NEW: ATR para TP/SL dinâmico
         
+        # Ajusta cálculo de pip para pares com JPY
+        if "JPY" in target_symbol.upper():
+            if "atr_pips" in atr:
+                atr["atr_pips"] = atr.get("atr", 0) / 0.01  # JPY usa 0.01
+        
         return {
             "timestamp": datetime.now().isoformat(),
-            "symbol": settings.trading_pair,
+            "symbol": target_symbol,
+            "price": round(current_price, 5),
             "current_price": round(current_price, 5),
             "moving_averages": moving_averages,
             "rsi": rsi,

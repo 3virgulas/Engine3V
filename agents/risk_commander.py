@@ -12,6 +12,7 @@ import json
 import re
 
 from agents.base import BaseAgent
+from utils.trade_memory import trade_memory
 
 
 # Type aliases
@@ -63,19 +64,36 @@ Seu veredito é FINAL e SOBERANO."""
         Constrói o prompt do CIO (Chief Investment Officer).
         Estilo: Wolf of Wall Street / Ray Dalio.
         """
+        # Trade Memory insights (se disponível)
+        trade_memory_section = ""
+        memory_data = raw_data.get("trade_memory", {})
+        if memory_data.get("insights"):
+            trade_memory_section = f"""
+
+TRADE MEMORY (Aprendizado Histórico):
+{memory_data.get('insights', 'Sem dados históricos')}
+Ajuste de Confiança Sugerido: {memory_data.get('confidence_adjustment', 0):+d}%
+"""
+            if memory_data.get("should_skip"):
+                trade_memory_section += f"""
+⚠️ MEMORY WARNING: {memory_data.get('skip_reason', '')}
+Considere este veto do sistema de aprendizado.
+"""
+        
         return f"""Você é o CIO (Chief Investment Officer) e Estrategista Chefe da 3virgulas, uma lenda do mercado financeiro conhecida por transformar dados complexos em lucros bilionários. Sua reputação foi construída sobre duas regras: 1) Nunca perca dinheiro. 2) Seja agressivo quando a probabilidade estiver a seu favor.
 
 Sua tarefa é analisar os relatórios dos seus analistas (Quant, Sentiment, Macro) e tomar a DECISÃO FINAL DE EXECUÇÃO.
 
 DADOS DA MESA:
 {json.dumps(raw_data, indent=2, ensure_ascii=False)}
-
+{trade_memory_section}
 DIRETRIZES DE ELITE:
 1. CONFLUÊNCIA MULTI-TIMEFRAME (CRÍTICO): Priorize sinais com confluência em múltiplos timeframes (M5/M15/H1/H4). Se 3+ timeframes concordam = alta probabilidade. Se há divergência H4 vs M5 = cautela.
-2. SOBERANIA TÉCNICA: Se o gráfico (Quant) mostrar um padrão de alta probabilidade com MTF confluente, ignore ruídos de sentimento neutro.
-3. CAÇADOR DE ASSIMETRIA: Só recomende entrada se o potencial de lucro for maior que o risco (min 1:1.5 RR).
-4. PRECISÃO CIRÚRGICA: Defina Entry, TP e SL baseados na volatilidade e níveis técnicos fornecidos. Não chute valores.
-5. SEM HESITAÇÃO: Se for HOLD, diga o porquê. Se for ENTRY, seja convicto. Confiança 65% é para amadores; busque convicção > 80%.
+2. TRADE MEMORY: Considere os insights históricos. Se o sistema aprendeu que certa condição tem baixo win rate, ajuste sua confiança de acordo.
+3. SOBERANIA TÉCNICA: Se o gráfico (Quant) mostrar um padrão de alta probabilidade com MTF confluente, ignore ruídos de sentimento neutro.
+4. CAÇADOR DE ASSIMETRIA: Só recomende entrada se o potencial de lucro for maior que o risco (min 1:1.5 RR).
+5. PRECISÃO CIRÚRGICA: Defina Entry, TP e SL baseados na volatilidade e níveis técnicos fornecidos. Não chute valores.
+6. SEM HESITAÇÃO: Se for HOLD, diga o porquê. Se for ENTRY, seja convicto. Confiança 65% é para amadores; busque convicção > 80%.
 
 Retorne EXCLUSIVAMENTE este JSON (sem markdown):
 {{
@@ -247,6 +265,55 @@ Retorne EXCLUSIVAMENTE este JSON (sem markdown):
                 "should_trade": macro.get("should_trade", True)
             }
         }
+        
+        # ============== TRADE MEMORY INSIGHTS ==============
+        # Busca padrões históricos para melhorar decisões
+        try:
+            memory_insights = await trade_memory.analyze_patterns(days=30)
+            
+            # Verifica se deve pular trade baseado no histórico
+            current_hour = datetime.now().hour
+            mtf_aligned = quant_raw.get("mtf_confluence_direction") == quant.get("signal")
+            volatility = quant_raw.get("volatility", "NORMAL")
+            
+            should_skip, skip_reason = trade_memory.should_skip_trade(
+                insights=memory_insights,
+                current_hour=current_hour,
+                volatility=volatility,
+                mtf_aligned=mtf_aligned
+            )
+            
+            if should_skip:
+                self.log(f"Trade Memory VETO: {skip_reason}", level="warning")
+            
+            # Ajuste de confiança baseado no histórico
+            memory_adjustment = trade_memory.get_confidence_adjustment(memory_insights, mtf_aligned)
+            
+            raw_data["trade_memory"] = {
+                "insights": trade_memory.format_insights_for_prompt(memory_insights),
+                "should_skip": should_skip,
+                "skip_reason": skip_reason if should_skip else None,
+                "confidence_adjustment": memory_adjustment,
+                "historical_win_rate": memory_insights.win_rate,
+                "profit_factor": memory_insights.profit_factor,
+                "sample_size": memory_insights.total_trades,
+                "recommendations": memory_insights.recommendations[:3],
+                "avoid_conditions": memory_insights.avoid_conditions[:2]
+            }
+            
+            self.log("Trade Memory insights loaded", {
+                "historical_win_rate": f"{memory_insights.win_rate:.1f}%",
+                "sample_size": memory_insights.total_trades,
+                "confidence_adjustment": memory_adjustment
+            })
+            
+        except Exception as e:
+            self.log(f"Trade Memory analysis failed: {e}", level="warning")
+            raw_data["trade_memory"] = {
+                "insights": "Trade Memory unavailable",
+                "should_skip": False,
+                "confidence_adjustment": 0
+            }
         
         # ============== CHAMADA LLM (CIO DECIDE) ==============
         self.log("Invoking CIO for final decision")

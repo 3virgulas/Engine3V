@@ -2,13 +2,14 @@
 3V Engine - Sentiment Pulse Agent
 ==================================
 @Sentiment_Pulse: Responsável pela análise de sentimento.
-Consome API Finnhub para análise de notícias.
+Consome Finnhub + Redes Sociais (Twitter, Reddit, StockTwits).
 """
 
 from typing import Any
 
 from agents.base import BaseAgent
 from utils.finnhub import finnhub_client
+from utils.social_sentiment import social_sentiment
 
 
 class SentimentPulseAgent(BaseAgent):
@@ -17,7 +18,8 @@ class SentimentPulseAgent(BaseAgent):
     
     Responsabilidades:
     - Monitorar notícias de Forex via Finnhub
-    - Analisar sentimento das últimas 20 notícias
+    - Analisar sentimento em redes sociais (Twitter, Reddit, StockTwits)
+    - Agregar múltiplas fontes com pesos configuráveis
     - Calcular score de -1 (Bearish) a +1 (Bullish)
     - Identificar narrativas dominantes no mercado
     """
@@ -30,70 +32,159 @@ class SentimentPulseAgent(BaseAgent):
     def role(self) -> str:
         return """Analista de Sentimento especializado em percepção de mercado Forex.
         
-Você analisa:
-1. Notícias recentes sobre EUR e USD
-2. Declarações do BCE (ECB) e Fed
-3. Narrativas dominantes no mercado
-4. Mudanças de tom na mídia financeira
+Você analisa MÚLTIPLAS FONTES:
+1. Notícias financeiras (Finnhub)
+2. Reddit (r/forex, r/ForexTrading)
+3. StockTwits (traders ativos)
+4. Twitter/X (quando disponível)
 
 Seu score de sentimento varia de:
 - -1.0: Extremamente Bearish para EUR/USD
 - 0.0: Neutro
 - +1.0: Extremamente Bullish para EUR/USD
 
-Considere o CONTEXTO das notícias, não apenas palavras-chave."""
+IMPORTANTE: Pondere mais as fontes com mais dados. Redes sociais
+capturam o "mood" dos traders retail em tempo real."""
     
     async def analyze(self, market_state: dict[str, Any]) -> dict[str, Any]:
         """
-        Executa análise de sentimento.
+        Executa análise de sentimento multi-fonte.
+        
+        Fontes:
+        1. Finnhub News (40%)
+        2. Social Media Agregado (60%)
+           - Reddit (30%)
+           - StockTwits (20%)
+           - Twitter (40% se disponível)
         
         Args:
             market_state: Estado do mercado (contexto adicional)
         
         Returns:
-            Score de sentimento e análise
+            Score de sentimento agregado e breakdown por fonte
         """
-        self.log("Starting sentiment analysis")
+        self.log("Starting multi-source sentiment analysis")
         
-        # Obtém sentimento de notícias
-        sentiment_data = await finnhub_client.get_news_sentiment(symbol="EUR")
+        # ==================== FINNHUB NEWS ====================
+        self.log("Fetching Finnhub news sentiment")
+        news_sentiment = await finnhub_client.get_news_sentiment(symbol="EUR")
         
-        self.log("Sentiment data retrieved", {
-            "score": sentiment_data["score"],
-            "label": sentiment_data["label"],
-            "articles": sentiment_data["articles_analyzed"]
+        # ==================== SOCIAL MEDIA ====================
+        self.log("Fetching social media sentiment")
+        social_data = await social_sentiment.get_aggregated_sentiment()
+        
+        # ==================== AGREGAÇÃO FINAL ====================
+        # Pesos: News 40%, Social 60%
+        news_score = news_sentiment.get("score", 0)
+        social_score = social_data.get("aggregated_score", 0)
+        
+        # Se social não disponível, usa só news
+        if not social_data.get("sources_available"):
+            final_score = news_score
+            source_weight = "100% News (Social unavailable)"
+        else:
+            final_score = (news_score * 0.4) + (social_score * 0.6)
+            source_weight = "40% News + 60% Social"
+        
+        # Determina label
+        if final_score > 0.15:
+            label = "BULLISH"
+        elif final_score < -0.15:
+            label = "BEARISH"
+        else:
+            label = "NEUTRAL"
+        
+        # Contagem total de dados
+        total_articles = news_sentiment.get("articles_analyzed", 0)
+        total_posts = social_data.get("total_posts_analyzed", 0)
+        
+        self.log("Multi-source data aggregated", {
+            "news_score": news_score,
+            "social_score": social_score,
+            "final_score": round(final_score, 2),
+            "label": label,
+            "articles": total_articles,
+            "posts": total_posts
         })
         
-        # Se houver artigos suficientes, usa LLM para análise mais profunda
-        if sentiment_data["articles_analyzed"] >= 3:
+        # ==================== LLM DEEP ANALYSIS ====================
+        # Se houver dados suficientes, usa LLM para análise profunda
+        if total_articles >= 3 or total_posts >= 10:
             llm_input = {
-                "sentiment_score": sentiment_data["score"],
-                "headlines": sentiment_data.get("recent_headlines", []),
-                "bullish_signals": sentiment_data["bullish_signals"],
-                "bearish_signals": sentiment_data["bearish_signals"]
+                "news_sentiment": {
+                    "score": news_score,
+                    "headlines": news_sentiment.get("recent_headlines", [])[:5],
+                    "bullish_signals": news_sentiment.get("bullish_signals", 0),
+                    "bearish_signals": news_sentiment.get("bearish_signals", 0)
+                },
+                "social_sentiment": {
+                    "score": social_score,
+                    "sources": social_data.get("sources_available", []),
+                    "total_posts": total_posts,
+                    "reddit": social_data.get("sources_breakdown", {}).get("reddit", {}),
+                    "stocktwits": social_data.get("sources_breakdown", {}).get("stocktwits", {})
+                },
+                "final_score": final_score
             }
             llm_analysis = await self.reason(llm_input)
         else:
             llm_analysis = {
-                "signal": sentiment_data["label"],
+                "signal": label,
                 "confidence_score": 30,
-                "analysis": "Insufficient news data for deep analysis",
+                "analysis": "Insufficient data for deep analysis",
                 "key_factors": []
             }
         
+        # ==================== RESULTADO FINAL ====================
         result = {
             "agent": self.name,
-            "timestamp": sentiment_data["timestamp"],
-            "raw_data": sentiment_data,
-            "llm_analysis": llm_analysis,
-            "sentiment_score": sentiment_data["score"],
-            "signal": llm_analysis.get("signal", sentiment_data["label"]),
-            "confidence": llm_analysis.get("confidence_score", 50)
+            "timestamp": social_data.get("timestamp", news_sentiment.get("timestamp")),
+            
+            # Scores individuais
+            "news_score": news_score,
+            "social_score": social_score,
+            "sentiment_score": round(final_score, 2),
+            
+            # Label e sinal
+            "signal": llm_analysis.get("signal", label),
+            "confidence": llm_analysis.get("confidence_score", 50),
+            
+            # Dados brutos para outros agentes
+            "raw_data": {
+                "score": final_score,
+                "label": label,
+                "articles_analyzed": total_articles,
+                "social_posts_analyzed": total_posts,
+                "source_weight": source_weight,
+                
+                # Headlines para CIO
+                "headlines": news_sentiment.get("recent_headlines", [])[:5],
+                
+                # Breakdown por fonte
+                "sources": {
+                    "finnhub_news": {
+                        "score": news_score,
+                        "articles": total_articles,
+                        "label": news_sentiment.get("label", "NEUTRAL")
+                    },
+                    "reddit": social_data.get("sources_breakdown", {}).get("reddit", {}),
+                    "stocktwits": social_data.get("sources_breakdown", {}).get("stocktwits", {}),
+                    "twitter": social_data.get("sources_breakdown", {}).get("twitter", {})
+                },
+                
+                # Bullish/Bearish signals
+                "bullish_signals": news_sentiment.get("bullish_signals", 0),
+                "bearish_signals": news_sentiment.get("bearish_signals", 0)
+            },
+            
+            # Análise LLM
+            "llm_analysis": llm_analysis
         }
         
         self.log("Analysis complete", {
-            "score": result["sentiment_score"],
-            "signal": result["signal"]
+            "final_score": result["sentiment_score"],
+            "signal": result["signal"],
+            "sources": social_data.get("sources_available", [])
         })
         
         return result
@@ -101,3 +192,4 @@ Considere o CONTEXTO das notícias, não apenas palavras-chave."""
 
 # Singleton
 sentiment_pulse = SentimentPulseAgent()
+
