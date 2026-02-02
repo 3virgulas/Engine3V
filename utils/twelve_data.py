@@ -153,15 +153,56 @@ class TwelveDataClient:
             else:
                 result[f"MA_{period}"] = None
         
-        # Sinal de tendência
-        if all(result.get(f"MA_{p}") for p in periods):
-            ma20, ma50, ma200 = result["MA_20"], result["MA_50"], result["MA_200"]
-            if ma20 > ma50 > ma200:
+        # Sinal de tendência (RELAXADO para Day Trading)
+        # Flexível para funcionar com 2 ou 3 MAs
+        ma20 = result.get("MA_20")
+        ma50 = result.get("MA_50")
+        ma200 = result.get("MA_200")
+        
+        if ma20 and ma50:  # Mínimo necessário: MA20 e MA50
+            current_price = df["close"].iloc[-1]
+            
+            # Sistema de pontuação: +1 bullish, -1 bearish
+            score = 0
+            signals = []
+            
+            # MA20 vs MA50 (curto prazo) - peso maior
+            if ma20 > ma50:
+                score += 2
+                signals.append("MA20>MA50")
+            elif ma20 < ma50:
+                score -= 2
+                signals.append("MA20<MA50")
+            
+            # MA50 vs MA200 (médio prazo) - apenas se MA200 disponível
+            if ma200:
+                if ma50 > ma200:
+                    score += 1
+                    signals.append("MA50>MA200")
+                elif ma50 < ma200:
+                    score -= 1
+                    signals.append("MA50<MA200")
+            
+            # Preço vs MA20 (momentum imediato) - peso maior
+            if current_price > ma20:
+                score += 2
+                signals.append("Price>MA20")
+            elif current_price < ma20:
+                score -= 2
+                signals.append("Price<MA20")
+            
+            # Determina tendência baseada na pontuação
+            # MODO AGRESSIVO: threshold baixo para mais sinais
+            # Score range: -5 to +5 (ou -4 to +4 sem MA200)
+            if score >= 1:
                 result["trend"] = "BULLISH"
-            elif ma20 < ma50 < ma200:
+            elif score <= -1:
                 result["trend"] = "BEARISH"
             else:
                 result["trend"] = "NEUTRAL"
+            
+            result["trend_score"] = score
+            result["trend_signals"] = signals
         
         return result
     
@@ -199,7 +240,87 @@ class TwelveDataClient:
         else:
             zone = "NEUTRAL"
         
-        return {"rsi": current_rsi, "zone": zone}
+        return {"rsi": current_rsi, "zone": zone, "condition": zone}
+    
+    def calculate_atr(
+        self,
+        df: pd.DataFrame,
+        period: int = 14
+    ) -> dict[str, Any]:
+        """
+        Calcula Average True Range (ATR) para volatilidade.
+        
+        O ATR mede a volatilidade média do mercado, essencial para:
+        - Definir TP/SL proporcionais à volatilidade
+        - Identificar quando o mercado está mais ou menos volátil
+        - Calcular position sizing baseado em risco
+        
+        Args:
+            df: DataFrame com colunas high, low, close
+            period: Período do ATR (padrão: 14)
+        
+        Returns:
+            Dict com ATR absoluto, ATR em pips, e classificação de volatilidade
+        """
+        if len(df) < period + 1:
+            return {
+                "atr": None,
+                "atr_pips": None,
+                "volatility": "INSUFFICIENT_DATA"
+            }
+        
+        # True Range = max(H-L, |H-Prev Close|, |L-Prev Close|)
+        high = df["high"]
+        low = df["low"]
+        close = df["close"]
+        prev_close = close.shift(1)
+        
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # ATR = SMA do True Range
+        atr = true_range.rolling(window=period).mean().iloc[-1]
+        atr_rounded = round(atr, 5)
+        
+        # Converte ATR para pips (1 pip = 0.0001 para EUR/USD)
+        atr_pips = round(atr * 10000, 1)
+        
+        # Classifica volatilidade baseado em ATR histórico
+        atr_series = true_range.rolling(window=period).mean()
+        atr_20_percentile = atr_series.quantile(0.20)
+        atr_80_percentile = atr_series.quantile(0.80)
+        
+        if atr >= atr_80_percentile:
+            volatility = "HIGH"
+            volatility_factor = 1.5  # Aumenta TP/SL em mercado volátil
+        elif atr <= atr_20_percentile:
+            volatility = "LOW"
+            volatility_factor = 0.75  # Reduz TP/SL em mercado calmo
+        else:
+            volatility = "NORMAL"
+            volatility_factor = 1.0
+        
+        # Calcula níveis sugeridos de TP/SL baseados em ATR
+        current_price = close.iloc[-1]
+        
+        # TP padrão = 2.5x ATR, SL padrão = 1.5x ATR (RR 1:1.67)
+        suggested_sl_distance = atr * 1.5 * volatility_factor
+        suggested_tp_distance = atr * 2.5 * volatility_factor
+        
+        return {
+            "atr": atr_rounded,
+            "atr_pips": atr_pips,
+            "volatility": volatility,
+            "volatility_factor": volatility_factor,
+            "suggested_sl_distance": round(suggested_sl_distance, 5),
+            "suggested_tp_distance": round(suggested_tp_distance, 5),
+            "suggested_sl_pips": round(suggested_sl_distance * 10000, 1),
+            "suggested_tp_pips": round(suggested_tp_distance * 10000, 1),
+            "risk_reward_ratio": round(suggested_tp_distance / suggested_sl_distance, 2) if suggested_sl_distance > 0 else 0
+        }
     
     def calculate_bollinger_bands(
         self,
@@ -343,6 +464,7 @@ class TwelveDataClient:
         rsi = self.calculate_rsi(df)
         bollinger = self.calculate_bollinger_bands(df)
         patterns = self.identify_candlestick_patterns(df)
+        atr = self.calculate_atr(df)  # NEW: ATR para TP/SL dinâmico
         
         return {
             "timestamp": datetime.now().isoformat(),
@@ -351,8 +473,241 @@ class TwelveDataClient:
             "moving_averages": moving_averages,
             "rsi": rsi,
             "bollinger_bands": bollinger,
+            "atr": atr,  # NEW!
             "candlestick_patterns": patterns,
             "candles_analyzed": len(df)
+        }
+    
+    async def get_multi_timeframe_analysis(self) -> dict[str, Any]:
+        """
+        Executa Multi-Timeframe Analysis (MTF) para identificar confluência.
+        
+        Timeframes analisados:
+        - M5 (5min): Timing de entrada preciso
+        - M15 (15min): Confirmação de tendência curta
+        - H1 (1h): Direção intraday
+        - H4 (4h): Tendência de swing
+        
+        Returns:
+            Dict com análise de cada TF e score de confluência
+        """
+        log_agent_action("@TwelveData", "Running Multi-Timeframe Analysis (MTF)")
+        
+        timeframes = {
+            "M5": "5min",
+            "M15": "15min",
+            "H1": "1h",
+            "H4": "4h"
+        }
+        
+        mtf_data = {}
+        current_price = None
+        
+        for tf_name, interval in timeframes.items():
+            try:
+                log_agent_action("@TwelveData", f"Fetching {tf_name} data", {"interval": interval})
+                
+                # Obtém dados para este timeframe
+                df = await self.get_price_data(interval=interval, outputsize=100)
+                
+                if current_price is None:
+                    current_price = df["close"].iloc[-1]
+                
+                # Calcula indicadores para este TF
+                ma = self.calculate_moving_averages(df, periods=[20, 50])
+                rsi = self.calculate_rsi(df)
+                bb = self.calculate_bollinger_bands(df)
+                
+                # Determina sinal deste TF
+                trend = ma.get("trend", "NEUTRAL")
+                trend_score = ma.get("trend_score", 0)
+                rsi_value = rsi.get("rsi", 50)
+                rsi_condition = rsi.get("condition", "NEUTRAL")
+                bb_position = bb.get("position", "MIDDLE")
+                
+                # Calcula sinal do TF
+                tf_signal = self._calculate_tf_signal(trend, trend_score, rsi_value, bb_position)
+                
+                mtf_data[tf_name] = {
+                    "interval": interval,
+                    "signal": tf_signal["signal"],
+                    "strength": tf_signal["strength"],
+                    "trend": trend,
+                    "trend_score": trend_score,
+                    "rsi": round(rsi_value, 2),
+                    "rsi_condition": rsi_condition,
+                    "bb_position": bb_position,
+                    "ma_20": ma.get("MA_20"),
+                    "ma_50": ma.get("MA_50")
+                }
+                
+                # Rate limit: espera um pouco entre chamadas
+                await asyncio.sleep(0.5)
+                
+            except Exception as e:
+                log_agent_action(
+                    "@TwelveData",
+                    f"Failed to fetch {tf_name} data: {e}",
+                    level="warning"
+                )
+                mtf_data[tf_name] = {
+                    "interval": interval,
+                    "signal": "NEUTRAL",
+                    "strength": 0,
+                    "error": str(e)
+                }
+        
+        # Calcula confluência entre timeframes
+        confluence = self._calculate_confluence(mtf_data)
+        
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "symbol": settings.trading_pair,
+            "current_price": round(current_price, 5) if current_price else 0,
+            "timeframes": mtf_data,
+            "confluence": confluence
+        }
+    
+    def _calculate_tf_signal(
+        self,
+        trend: str,
+        trend_score: int,
+        rsi: float,
+        bb_position: str
+    ) -> dict[str, Any]:
+        """
+        Calcula sinal de um timeframe específico.
+        
+        Args:
+            trend: BULLISH, BEARISH, NEUTRAL
+            trend_score: -5 a +5
+            rsi: Valor do RSI
+            bb_position: Posição nas Bandas de Bollinger
+        
+        Returns:
+            Dict com signal e strength
+        """
+        score = 0
+        
+        # Trend contribui com peso maior
+        if trend == "BULLISH":
+            score += min(trend_score, 3)  # Máx +3
+        elif trend == "BEARISH":
+            score += max(trend_score, -3)  # Mín -3
+        
+        # RSI contribui
+        if rsi > 60:
+            score += 1  # Momentum bullish
+        elif rsi < 40:
+            score -= 1  # Momentum bearish
+        
+        # Bollinger contribui
+        if bb_position == "BELOW_LOWER":
+            score += 1  # Potencial reversão para cima
+        elif bb_position == "ABOVE_UPPER":
+            score -= 1  # Potencial reversão para baixo
+        elif bb_position == "LOWER_HALF":
+            score -= 0.5  # Leve bearish
+        elif bb_position == "UPPER_HALF":
+            score += 0.5  # Leve bullish
+        
+        # Determina sinal
+        if score >= 2:
+            signal = "BULLISH"
+            strength = min(int(score * 25), 100)
+        elif score <= -2:
+            signal = "BEARISH"
+            strength = min(int(abs(score) * 25), 100)
+        else:
+            signal = "NEUTRAL"
+            strength = int(abs(score) * 20)
+        
+        return {"signal": signal, "strength": strength}
+    
+    def _calculate_confluence(self, mtf_data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Calcula confluência entre múltiplos timeframes.
+        
+        Regras:
+        - 4/4 TFs no mesmo sentido = FORTE confluência (score 100)
+        - 3/4 TFs no mesmo sentido = BOA confluência (score 75)
+        - 2/4 TFs = FRACA confluência (score 50)
+        - Divergência H1/H4 vs M5/M15 = WARNING
+        
+        Returns:
+            Dict com score de confluência e mensagem
+        """
+        bullish_count = 0
+        bearish_count = 0
+        signals = []
+        
+        # Pesos por timeframe (H4 tem mais peso que M5)
+        weights = {"M5": 1, "M15": 1.5, "H1": 2, "H4": 3}
+        weighted_score = 0
+        total_weight = 0
+        
+        for tf_name, data in mtf_data.items():
+            if "error" in data:
+                continue
+                
+            signal = data.get("signal", "NEUTRAL")
+            weight = weights.get(tf_name, 1)
+            total_weight += weight
+            
+            if signal == "BULLISH":
+                bullish_count += 1
+                weighted_score += weight
+                signals.append(f"{tf_name}:BULL")
+            elif signal == "BEARISH":
+                bearish_count += 1
+                weighted_score -= weight
+                signals.append(f"{tf_name}:BEAR")
+            else:
+                signals.append(f"{tf_name}:NEUT")
+        
+        # Normaliza score para 0-100
+        if total_weight > 0:
+            normalized_score = (weighted_score / total_weight) * 50 + 50  # 0 a 100
+        else:
+            normalized_score = 50
+        
+        # Determina direção dominante
+        if bullish_count >= 3:
+            direction = "BULLISH"
+            confluence_score = min(int(normalized_score), 100)
+            message = f"Confluência BULLISH em {bullish_count}/4 timeframes"
+        elif bearish_count >= 3:
+            direction = "BEARISH"
+            confluence_score = min(int(100 - normalized_score), 100)
+            message = f"Confluência BEARISH em {bearish_count}/4 timeframes"
+        elif bullish_count == bearish_count == 2:
+            direction = "MIXED"
+            confluence_score = 30
+            message = "Divergência entre timeframes - aguardar"
+        else:
+            direction = "NEUTRAL"
+            confluence_score = 40
+            message = "Sem confluência clara"
+        
+        # Verifica divergência H4 vs M5 (warning)
+        h4_signal = mtf_data.get("H4", {}).get("signal", "NEUTRAL")
+        m5_signal = mtf_data.get("M5", {}).get("signal", "NEUTRAL")
+        
+        divergence = False
+        if (h4_signal == "BULLISH" and m5_signal == "BEARISH") or \
+           (h4_signal == "BEARISH" and m5_signal == "BULLISH"):
+            divergence = True
+            message += " | ⚠️ Divergência H4/M5"
+        
+        return {
+            "direction": direction,
+            "score": confluence_score,
+            "bullish_count": bullish_count,
+            "bearish_count": bearish_count,
+            "weighted_score": round(weighted_score, 2),
+            "signals": signals,
+            "message": message,
+            "divergence": divergence
         }
     
     async def test_connection(self) -> bool:

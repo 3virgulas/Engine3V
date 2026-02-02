@@ -84,14 +84,17 @@ async def make_decision(state: MarketState) -> MarketState:
             reasoning=reasoning
         )
         
-        # Notificação Telegram (apenas BUY, SELL, VETO)
+        # Notificação Telegram (apenas BUY, SELL, VETO, ou HOLD >= 70%)
         await telegram_bot.notify_trade_signal(
             decision=decision,
             direction=result.get("direction"),
             confidence=confidence,
             reasoning=reasoning,
             pair=state["pair"],
-            inputs=result.get("inputs")
+            inputs=result.get("inputs"),
+            market_bias=result.get("market_bias"),
+            scheduled_entry=result.get("scheduled_entry"),
+            exit_levels=result.get("exit_levels")
         )
         
     except Exception as e:

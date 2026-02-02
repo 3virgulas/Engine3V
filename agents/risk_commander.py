@@ -1,49 +1,43 @@
 """
-3V Engine - Risk Commander Agent
-=================================
+3V Engine - Risk Commander Agent (LLM-FIRST ARCHITECTURE)
+==========================================================
 @Risk_Commander: Decisor final do sistema.
-Implementa "Veredito de Ouro" institucional com scoring de confiança.
+Arquitetura LLM-First: A IA tem SOBERANIA TOTAL sobre as decisões.
+Zero cálculos matemáticos - 100% inteligência artificial.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
+import json
+import re
 
 from agents.base import BaseAgent
 
 
-# Type aliases para clareza
-Decision = Literal["BUY", "SELL", "HOLD", "VETO"]
-TechnicalSignal = Literal["BULLISH", "BEARISH", "NEUTRAL"]
+# Type aliases
+Decision = Literal["ENTRY", "HOLD"]
+Direction = Literal["BUY", "SELL"]
 
 
 class RiskCommanderAgent(BaseAgent):
     """
-    @Risk_Commander - Comandante de Risco e Decisor Final
+    @Risk_Commander - CIO (Chief Investment Officer)
     
-    Implementa o "Veredito de Ouro" institucional:
+    ARQUITETURA LLM-FIRST:
+    - A IA recebe TODOS os dados brutos dos agentes
+    - A IA decide: decision, direction, confidence, entry/tp/sl
+    - ZERO cálculos matemáticos de confiança
+    - ÚNICO VETO: Black Swan (evento de alto impacto < 30 min)
     
-    1. LÓGICA DE DIREÇÃO:
-       - BUY (Long): Technical BULLISH + Sentiment > 0.3
-       - SELL (Short): Technical BEARISH + Sentiment < -0.3
-       - HOLD: Caso contrário
-    
-    2. VETO MACRO (Crítico):
-       - Se @Macro_Watcher retornar HIGH_RISK ou EXTREME_RISK
-       - Decisão final DEVE ser HOLD com justificativa de veto
-    
-    3. CÁLCULO DE CONFIANÇA:
-       - Convergência total: 85%+
-       - Indicador neutro: < 60%
-       
-    Filosofia: Conservador e lucrativo.
+    Filosofia: "Seja agressivo quando a probabilidade estiver a seu favor."
     """
     
-    # Thresholds institucionais
-    SENTIMENT_BULLISH_THRESHOLD = 0.3
-    SENTIMENT_BEARISH_THRESHOLD = -0.3
-    CONFIDENCE_FULL_CONVERGENCE = 85
-    CONFIDENCE_PARTIAL = 60
-    CONFIDENCE_LOW = 40
+    # Entry Window config (minutos)
+    ENTRY_WINDOW_START_MINUTES = 3
+    ENTRY_WINDOW_END_MINUTES = 5
+    
+    # Veto window (minutos)
+    BLACK_SWAN_VETO_MINUTES = 30
     
     @property
     def name(self) -> str:
@@ -51,276 +45,411 @@ class RiskCommanderAgent(BaseAgent):
     
     @property
     def role(self) -> str:
-        return """Comandante de Risco - Decisor Final do sistema 3V Engine.
+        return """CIO (Chief Investment Officer) e Estrategista Chefe da 3virgulas.
         
-Você recebe análises de:
-1. @Quant_Analyst - Sinal técnico (BULLISH/BEARISH/NEUTRAL)
-2. @Sentiment_Pulse - Score de sentimento (-1 a +1)
-3. @Macro_Watcher - Alerta de volatilidade (LOW/MODERATE/HIGH/EXTREME)
+Você é uma lenda do mercado financeiro. Sua reputação foi construída sobre duas regras:
+1) Nunca perca dinheiro. 
+2) Seja agressivo quando a probabilidade estiver a seu favor.
 
-Regras de decisão (Veredito de Ouro):
-- BUY: Técnico BULLISH + Sentimento > 0.3 + Macro não HIGH/EXTREME
-- SELL: Técnico BEARISH + Sentimento < -0.3 + Macro não HIGH/EXTREME
-- HOLD: Sinais conflitantes OU macro HIGH_RISK
-- VETO: Macro EXTREME_RISK (nunca operar)
+Você recebe relatórios de:
+- @Quant_Analyst: Análise técnica (RSI, Bandas, MAs, Suporte/Resistência)
+- @Sentiment_Pulse: Análise de sentimento do mercado
+- @Macro_Watcher: Calendário econômico e riscos macro
 
-Seu veredito é FINAL. Seja conservador e proteja o capital."""
+Seu veredito é FINAL e SOBERANO."""
     
-    def _calculate_confidence(
-        self,
-        technical: TechnicalSignal,
-        sentiment: float,
-        macro: str,
-        decision: Decision
-    ) -> int:
+    def _build_cio_prompt(self, raw_data: dict[str, Any]) -> str:
         """
-        Calcula score de confiança do veredito.
-        
-        Regras:
-        - Convergência total (tech + sentiment alinhados): 85%+
-        - Sinal técnico claro + sentimento neutro: 70%
-        - Indicador técnico neutro: < 60%
-        - Veto macro: 100% (certeza do veto)
+        Constrói o prompt do CIO (Chief Investment Officer).
+        Estilo: Wolf of Wall Street / Ray Dalio.
         """
-        if decision == "VETO":
-            return 100  # Certeza absoluta do veto
-        
-        if decision == "HOLD" and macro in ["HIGH_RISK", "EXTREME_RISK"]:
-            return 95  # Alta confiança no hold por macro
-        
-        # Verificação de convergência
-        tech_aligned = technical in ["BULLISH", "BEARISH"]
-        sentiment_aligned = abs(sentiment) > 0.3
-        sentiment_neutral = abs(sentiment) <= 0.3
-        
-        # Convergência total (tech + sentiment alinhados)
-        if tech_aligned and sentiment_aligned and macro == "LOW_RISK":
-            base_confidence = self.CONFIDENCE_FULL_CONVERGENCE
-            # Bônus por sentimento forte
-            sentiment_bonus = min(int(abs(sentiment) * 10), 10)
-            return min(base_confidence + sentiment_bonus, 95)
-        
-        # Convergência parcial (macro moderado)
-        if tech_aligned and sentiment_aligned and macro == "MODERATE_RISK":
-            return 75
-        
-        # NOVO: Sinal técnico claro + sentimento neutro = 70%
-        if tech_aligned and sentiment_neutral and macro in ["LOW_RISK", "MODERATE_RISK"]:
-            return 70
-        
-        # Técnico neutro = baixa confiança
-        if technical == "NEUTRAL":
-            return self.CONFIDENCE_LOW
-        
-        # Parcialmente alinhado
-        return self.CONFIDENCE_PARTIAL
+        return f"""Você é o CIO (Chief Investment Officer) e Estrategista Chefe da 3virgulas, uma lenda do mercado financeiro conhecida por transformar dados complexos em lucros bilionários. Sua reputação foi construída sobre duas regras: 1) Nunca perca dinheiro. 2) Seja agressivo quando a probabilidade estiver a seu favor.
+
+Sua tarefa é analisar os relatórios dos seus analistas (Quant, Sentiment, Macro) e tomar a DECISÃO FINAL DE EXECUÇÃO.
+
+DADOS DA MESA:
+{json.dumps(raw_data, indent=2, ensure_ascii=False)}
+
+DIRETRIZES DE ELITE:
+1. CONFLUÊNCIA MULTI-TIMEFRAME (CRÍTICO): Priorize sinais com confluência em múltiplos timeframes (M5/M15/H1/H4). Se 3+ timeframes concordam = alta probabilidade. Se há divergência H4 vs M5 = cautela.
+2. SOBERANIA TÉCNICA: Se o gráfico (Quant) mostrar um padrão de alta probabilidade com MTF confluente, ignore ruídos de sentimento neutro.
+3. CAÇADOR DE ASSIMETRIA: Só recomende entrada se o potencial de lucro for maior que o risco (min 1:1.5 RR).
+4. PRECISÃO CIRÚRGICA: Defina Entry, TP e SL baseados na volatilidade e níveis técnicos fornecidos. Não chute valores.
+5. SEM HESITAÇÃO: Se for HOLD, diga o porquê. Se for ENTRY, seja convicto. Confiança 65% é para amadores; busque convicção > 80%.
+
+Retorne EXCLUSIVAMENTE este JSON (sem markdown):
+{{
+  "decision": "ENTRY" ou "HOLD",
+  "direction": "BUY" ou "SELL",
+  "confidence": 0-100,
+  "entry_price": 0.00000,
+  "take_profit": 0.00000,
+  "stop_loss": 0.00000,
+  "reasoning": "Sua tese de investimento em uma frase de impacto."
+}}"""
     
-    def _build_reasoning(
-        self,
-        decision: Decision,
-        direction: str | None,
-        technical: TechnicalSignal,
-        sentiment: float,
-        macro: str,
-        confidence: int
-    ) -> str:
+    def _parse_llm_response(self, response: str) -> dict[str, Any]:
         """
-        Constrói justificativa detalhada para o veredito.
-        Formato institucional para auditoria.
+        Extrai JSON da resposta do LLM.
+        Robusto para lidar com markdown ou texto extra.
         """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            # Tenta parse direto
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
         
-        if decision == "VETO":
-            return (
-                f"[{timestamp}] VETO MACRO: Volatilidade extrema detectada. "
-                f"Alert={macro}. Operações suspensas até normalização do calendário econômico."
-            )
+        # Remove markdown code blocks se existir
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
         
-        if decision == "HOLD" and macro in ["HIGH_RISK", "EXTREME_RISK"]:
-            return (
-                f"[{timestamp}] VETO MACRO: Alta volatilidade esperada. "
-                f"Alert={macro}. Aguardando janela de menor risco para entrada. "
-                f"Tech={technical}, Sentiment={sentiment:.2f}."
-            )
+        # Fallback seguro
+        self.log("Failed to parse LLM JSON, using fallback", level="warning")
+        return {
+            "decision": "HOLD",
+            "direction": None,
+            "confidence": 30,
+            "reasoning": "Erro ao processar resposta da IA"
+        }
+    
+    def _check_black_swan_veto(self, macro: dict[str, Any]) -> tuple[bool, str | None]:
+        """
+        Verifica se há evento de alto impacto nos próximos 30 minutos.
+        ÚNICO VETO DO SISTEMA.
         
-        if decision == "HOLD":
-            # Analisar motivo do hold
-            reasons = []
-            if technical == "NEUTRAL":
-                reasons.append("sinal técnico neutro")
-            if abs(sentiment) < 0.3:
-                reasons.append(f"sentimento fraco ({sentiment:.2f})")
-            if technical == "BULLISH" and sentiment < 0:
-                reasons.append("divergência técnico/sentimento")
-            if technical == "BEARISH" and sentiment > 0:
-                reasons.append("divergência técnico/sentimento")
-            
-            reason_text = ", ".join(reasons) if reasons else "sinais mistos"
-            return (
-                f"[{timestamp}] HOLD: Sem convergência clara. Motivo: {reason_text}. "
-                f"Tech={technical}, Sentiment={sentiment:.2f}, Macro={macro}. "
-                f"Aguardando condições favoráveis."
-            )
+        Returns:
+            (should_veto, reason)
+        """
+        alert = macro.get("alert", "LOW_RISK")
+        high_impact = macro.get("high_impact_events", 0)
         
-        # BUY ou SELL
-        direction_pt = "compra (Long)" if direction == "LONG" else "venda (Short)"
-        return (
-            f"[{timestamp}] {decision}: Entrada validada por convergência. "
-            f"Direção: {direction_pt}. "
-            f"Tech={technical} (confirmado), Sentiment={sentiment:.2f} "
-            f"({'positivo forte' if sentiment > 0.3 else 'negativo forte'}), "
-            f"Macro={macro} (sem riscos próximos). "
-            f"Confiança: {confidence}%."
-        )
+        # Veto apenas para EXTREME_RISK com eventos iminentes
+        if alert == "EXTREME_RISK":
+            return True, f"BLACK SWAN: Risco extremo detectado. {high_impact} evento(s) de alto impacto iminente(s)."
+        
+        # HIGH_RISK com eventos próximos também é veto
+        if alert == "HIGH_RISK" and high_impact > 0:
+            return True, f"VETO MACRO: {high_impact} evento(s) de alto impacto nos próximos 30 min."
+        
+        return False, None
+    
+    def _get_market_bias(self, direction: str | None) -> str:
+        """
+        Determina o viés do mercado baseado na direção.
+        """
+        if direction == "BUY":
+            return "Alta"
+        elif direction == "SELL":
+            return "Baixa"
+        return "Lateralizado"
+    
+    def _calculate_entry_window(self, base_timestamp: datetime | None = None) -> dict[str, Any]:
+        """
+        Calcula a janela de entrada recomendada (3-5 minutos após análise).
+        """
+        base = base_timestamp or datetime.now()
+        
+        start_time = base + timedelta(minutes=self.ENTRY_WINDOW_START_MINUTES)
+        end_time = base + timedelta(minutes=self.ENTRY_WINDOW_END_MINUTES)
+        
+        return {
+            "start": start_time.strftime("%H:%M"),
+            "end": end_time.strftime("%H:%M"),
+            "start_iso": start_time.isoformat(),
+            "end_iso": end_time.isoformat(),
+            "instruction": "Aguardar confirmação de volume no horário sugerido"
+        }
     
     async def analyze(self, market_state: dict[str, Any]) -> dict[str, Any]:
         """
-        Toma decisão final baseada nos sinais agregados.
-        Implementa o Veredito de Ouro institucional.
-        
-        Args:
-            market_state: Estado do mercado com análises dos outros agentes
-        
-        Returns:
-            Decisão final com justificativa para Supabase
+        DECISÃO FINAL via LLM-FIRST ARCHITECTURE.
+        A IA tem SOBERANIA TOTAL sobre a decisão.
         """
-        self.log("Aggregating signals for Golden Verdict")
+        self.log("CIO analyzing market data (LLM-First Architecture)")
         
-        # ============== EXTRAÇÃO DE SINAIS ==============
+        # ============== EXTRAÇÃO DE DADOS BRUTOS ==============
         quant = market_state.get("quant_analysis", {})
         sentiment = market_state.get("sentiment_analysis", {})
         macro = market_state.get("macro_analysis", {})
+        pair = market_state.get("pair", "EUR/USD")
         
-        # Sinais brutos
-        technical_raw = quant.get("llm_analysis", {})
-        technical_signal: TechnicalSignal = technical_raw.get("signal", "NEUTRAL")
+        # Dados técnicos detalhados
+        quant_raw = quant.get("raw_data", {})
+        quant_llm = quant.get("llm_analysis", {})
         
-        sentiment_data = sentiment.get("raw_data", {})
-        sentiment_score: float = sentiment_data.get("score", 0.0)
+        # Dados de sentimento
+        sentiment_raw = sentiment.get("raw_data", {})
         
-        macro_alert: str = macro.get("alert", "LOW_RISK")
+        # ============== CHECK BLACK SWAN VETO ==============
+        should_veto, veto_reason = self._check_black_swan_veto(macro)
         
-        self.log("Signals extracted", {
-            "technical": technical_signal,
-            "sentiment": sentiment_score,
-            "macro": macro_alert
-        })
+        if should_veto:
+            self.log("BLACK SWAN VETO TRIGGERED", {"reason": veto_reason}, level="warning")
+            
+            return self._build_veto_result(
+                pair=pair,
+                reason=veto_reason,
+                macro=macro,
+                quant=quant,
+                sentiment_raw=sentiment_raw
+            )
         
-        # ============== VEREDITO DE OURO ==============
-        
-        decision: Decision
-        direction: str | None = None
-        
-        # 1. VETO MACRO (Prioridade máxima)
-        if macro_alert == "EXTREME_RISK":
-            decision = "VETO"
-            direction = None
-        
-        # 2. HOLD por HIGH_RISK (Veto de precaução)
-        elif macro_alert == "HIGH_RISK":
-            decision = "HOLD"
-            direction = None
-        
-        # 3. BUY: Convergência bullish
-        elif (
-            technical_signal == "BULLISH" and 
-            sentiment_score > self.SENTIMENT_BULLISH_THRESHOLD
-        ):
-            decision = "BUY"
-            direction = "LONG"
-        
-        # 4. SELL: Convergência bearish
-        elif (
-            technical_signal == "BEARISH" and 
-            sentiment_score < self.SENTIMENT_BEARISH_THRESHOLD
-        ):
-            decision = "SELL"
-            direction = "SHORT"
-        
-        # 5. HOLD: Sem convergência
-        else:
-            decision = "HOLD"
-            direction = None
-        
-        # ============== CÁLCULO DE CONFIANÇA ==============
-        confidence = self._calculate_confidence(
-            technical_signal, 
-            sentiment_score, 
-            macro_alert, 
-            decision
-        )
-        
-        # ============== REASONING DETALHADO ==============
-        reasoning = self._build_reasoning(
-            decision,
-            direction,
-            technical_signal,
-            sentiment_score,
-            macro_alert,
-            confidence
-        )
-        
-        # ============== VALIDAÇÃO LLM (Opcional) ==============
-        llm_input = {
-            "technical_signal": technical_signal,
-            "sentiment_score": sentiment_score,
-            "macro_alert": macro_alert,
-            "preliminary_decision": decision,
-            "preliminary_direction": direction,
-            "preliminary_confidence": confidence,
-            "preliminary_reasoning": reasoning
+        # ============== MONTAR DADOS PARA O CIO ==============
+        raw_data = {
+            "pair": pair,
+            "quant_analyst": {
+                "signal": quant.get("signal", "NEUTRAL"),
+                "trend": quant_raw.get("trend", "NEUTRAL"),
+                "trend_score": quant_raw.get("trend_score", 0),
+                "rsi": quant_raw.get("rsi", 50),
+                "price": quant_raw.get("price", 0),
+                "bollinger_bands": {
+                    "upper": quant_raw.get("bb_upper", 0),
+                    "middle": quant_raw.get("bb_middle", 0),
+                    "lower": quant_raw.get("bb_lower", 0),
+                    "position": quant_raw.get("bb_position", "middle")
+                },
+                "moving_averages": quant_raw.get("ma_signals", []),
+                "llm_reasoning": quant_llm.get("reasoning", ""),
+                "deterministic_reasons": quant.get("deterministic_reasons", [])
+            },
+            # MULTI-TIMEFRAME ANALYSIS (NEW!)
+            "multi_timeframe": {
+                "confluence_direction": quant_raw.get("mtf_confluence_direction", "NEUTRAL"),
+                "confluence_score": quant_raw.get("mtf_confluence_score", 0),
+                "confluence_message": quant_raw.get("mtf_confluence_message", ""),
+                "signals": quant_raw.get("mtf_signals", []),
+                "divergence_warning": quant_raw.get("mtf_divergence", False),
+                "timeframes": {
+                    tf: {
+                        "signal": data.get("signal"),
+                        "strength": data.get("strength"),
+                        "rsi": data.get("rsi")
+                    }
+                    for tf, data in quant_raw.get("mtf_timeframes", {}).items()
+                    if isinstance(data, dict)
+                }
+            },
+            "sentiment_pulse": {
+                "score": sentiment_raw.get("score", 0),
+                "label": sentiment_raw.get("label", "NEUTRAL"),
+                "articles_analyzed": sentiment_raw.get("articles_analyzed", 0),
+                "headlines": sentiment_raw.get("headlines", [])[:5]  # Top 5 headlines
+            },
+            "macro_watcher": {
+                "alert": macro.get("alert", "LOW_RISK"),
+                "high_impact_events": macro.get("high_impact_events", 0),
+                "message": macro.get("message", ""),
+                "should_trade": macro.get("should_trade", True)
+            }
         }
         
-        llm_analysis = await self.reason(llm_input)
+        # ============== CHAMADA LLM (CIO DECIDE) ==============
+        self.log("Invoking CIO for final decision")
         
-        # ============== RESULTADO FINAL ==============
+        cio_prompt = self._build_cio_prompt(raw_data)
+        
+        # Usar chat() diretamente para prompt customizado
+        try:
+            response = await self._llm.chat(
+                system_prompt=cio_prompt,
+                user_message="Analise e tome sua decisão. Retorne APENAS o JSON.",
+                temperature=0.3  # Levemente criativo para reasoning
+            )
+            raw_response = response.content
+        except Exception as e:
+            self.log(f"LLM call failed: {e}", level="error")
+            raw_response = '{"decision": "HOLD", "direction": null, "confidence": 30, "reasoning": "Erro na chamada LLM"}'
+        
+        # Parse da resposta
+        cio_decision = self._parse_llm_response(raw_response)
+        cio_decision["raw_response"] = raw_response
+        
+        # ============== EXTRAIR DECISÃO DA IA ==============
+        decision = cio_decision.get("decision", "HOLD").upper()
+        direction = cio_decision.get("direction")
+        confidence = cio_decision.get("confidence", 50)
+        reasoning = cio_decision.get("reasoning", "Sem explicação")
+        
+        # Entry/TP/SL definidos pela IA
+        entry_price = cio_decision.get("entry_price", quant_raw.get("price", 0))
+        take_profit = cio_decision.get("take_profit", 0)
+        stop_loss = cio_decision.get("stop_loss", 0)
+        
+        # ============== CONFIDENCE OVERRIDE ==============
+        # REGRA: Se confidence >= 65%, DEVE ser tratado como ENTRY (não HOLD)
+        # Isso garante que sinais fortes nunca sejam desperdiçados
+        quant_signal = raw_data["quant_analyst"]["signal"]
+        
+        if decision == "HOLD" and confidence >= 65:
+            # Alta confiança + HOLD = inconsistência da IA
+            # Forçar ENTRY baseado no sinal técnico
+            self.log("CONFIDENCE OVERRIDE", {
+                "original_decision": decision,
+                "confidence": confidence,
+                "override_action": "Forcing ENTRY due to high confidence"
+            }, level="warning")
+            
+            if quant_signal == "BULLISH":
+                decision = "ENTRY"
+                direction = "BUY"
+            elif quant_signal == "BEARISH":
+                decision = "ENTRY"
+                direction = "SELL"
+            # Se técnico for NEUTRAL, mantém HOLD mesmo com alta confiança
+        
+        # Normalizar decision para o formato do sistema
+        if decision == "ENTRY":
+            if direction == "BUY":
+                final_decision = "BUY"
+            elif direction == "SELL":
+                final_decision = "SELL"
+            else:
+                final_decision = "HOLD"
+                direction = None
+        else:
+            final_decision = "HOLD"
+            direction = None
+        
+        # ============== LOG DO VEREDITO ==============
+        log_level = "warning" if final_decision in ["BUY", "SELL"] else "info"
+        signal_strength = "FORTE" if confidence >= 75 else "MODERADO" if confidence >= 50 else "FRACO"
+        
+        self.log("CIO VERDICT", {
+            "decision": final_decision,
+            "direction": direction,
+            "confidence": f"{confidence}%",
+            "signal_strength": signal_strength,
+            "reasoning": reasoning[:100] + "..." if len(reasoning) > 100 else reasoning
+        }, level=log_level)
+        
+        # ============== RESULT FINAL ==============
+        market_bias = self._get_market_bias(direction)
+        scheduled_entry = self._calculate_entry_window()
+        
+        exit_levels = {
+            "entry_price": entry_price,
+            "take_profit": take_profit,
+            "stop_loss": stop_loss,
+            "exit_condition": f"TP: {take_profit:.5f} | SL: {stop_loss:.5f}" if take_profit and stop_loss else "Não definido",
+            "risk_reward_ratio": round((take_profit - entry_price) / (entry_price - stop_loss), 2) if stop_loss and take_profit and entry_price != stop_loss else 0
+        }
+        
         result = {
             "agent": self.name,
-            "decision": decision,
+            "decision": final_decision,
             "direction": direction,
             "confidence": confidence,
             "reasoning": reasoning,
-            "llm_validation": llm_analysis,
+            "signal_strength": signal_strength,
+            "llm_validation": cio_decision,
             "timestamp": datetime.now().isoformat(),
+            
+            # Professional Execution Strategy
+            "market_bias": market_bias,
+            "scheduled_entry": scheduled_entry,
+            "exit_levels": exit_levels,
+            
             "inputs": {
                 "technical": {
-                    "signal": technical_signal,
-                    "raw": quant.get("raw_data", {})
+                    "signal": quant.get("signal", "NEUTRAL"),
+                    "raw": quant_raw
                 },
                 "sentiment": {
-                    "score": sentiment_score,
-                    "label": sentiment_data.get("label", "NEUTRAL"),
-                    "articles_analyzed": sentiment_data.get("articles_analyzed", 0)
+                    "score": sentiment_raw.get("score", 0),
+                    "label": sentiment_raw.get("label", "NEUTRAL"),
+                    "articles_analyzed": sentiment_raw.get("articles_analyzed", 0)
                 },
                 "macro": {
-                    "alert": macro_alert,
+                    "alert": macro.get("alert", "LOW_RISK"),
                     "high_impact_events": macro.get("high_impact_events", 0),
                     "message": macro.get("message", "")
                 }
             },
+            
             # Campos para Supabase
             "supabase_record": {
-                "pair": market_state.get("pair", "EUR/USD"),
+                "pair": pair,
                 "technical_signal": {
-                    "direction": technical_signal,
-                    "indicators": quant.get("raw_data", {})
+                    "direction": quant.get("signal", "NEUTRAL"),
+                    "indicators": quant_raw
                 },
-                "sentiment_score": sentiment_score,
-                "macro_alert": macro_alert,
-                "final_decision": f"{decision}_{direction}" if direction else decision,
-                "reasoning": reasoning
+                "sentiment_score": sentiment_raw.get("score", 0),
+                "macro_alert": macro.get("alert", "LOW_RISK"),
+                "final_decision": f"{final_decision}_{direction}" if direction else final_decision,
+                "reasoning": reasoning,
+                "market_bias": market_bias,
+                "scheduled_entry": scheduled_entry,
+                "exit_levels": exit_levels
             }
         }
         
-        # Log com destaque para decisões de entrada
-        log_level = "warning" if decision in ["BUY", "SELL"] else "info"
-        self.log("GOLDEN VERDICT", {
-            "decision": decision,
-            "direction": direction,
-            "confidence": f"{confidence}%"
-        }, level=log_level)
-        
         return result
+    
+    def _build_veto_result(
+        self, 
+        pair: str, 
+        reason: str, 
+        macro: dict, 
+        quant: dict,
+        sentiment_raw: dict
+    ) -> dict[str, Any]:
+        """
+        Constrói resultado de VETO para Black Swan events.
+        """
+        return {
+            "agent": self.name,
+            "decision": "HOLD",
+            "direction": None,
+            "confidence": 100,  # 100% certeza do veto
+            "reasoning": reason,
+            "signal_strength": "VETO",
+            "llm_validation": {"vetoed": True, "reason": reason},
+            "timestamp": datetime.now().isoformat(),
+            
+            "market_bias": "Lateralizado",
+            "scheduled_entry": None,
+            "exit_levels": {
+                "take_profit": None,
+                "stop_loss": None,
+                "exit_condition": "VETO - Aguardar normalização",
+                "risk_reward_ratio": 0
+            },
+            
+            "inputs": {
+                "technical": {
+                    "signal": quant.get("signal", "NEUTRAL"),
+                    "raw": quant.get("raw_data", {})
+                },
+                "sentiment": {
+                    "score": sentiment_raw.get("score", 0),
+                    "label": sentiment_raw.get("label", "NEUTRAL"),
+                    "articles_analyzed": sentiment_raw.get("articles_analyzed", 0)
+                },
+                "macro": {
+                    "alert": macro.get("alert", "HIGH_RISK"),
+                    "high_impact_events": macro.get("high_impact_events", 0),
+                    "message": macro.get("message", ""),
+                    "VETO_ACTIVE": True
+                }
+            },
+            
+            "supabase_record": {
+                "pair": pair,
+                "technical_signal": {"direction": "NEUTRAL", "indicators": {}},
+                "sentiment_score": sentiment_raw.get("score", 0),
+                "macro_alert": macro.get("alert", "HIGH_RISK"),
+                "final_decision": "VETO_MACRO",
+                "reasoning": reason,
+                "market_bias": "Lateralizado",
+                "scheduled_entry": None,
+                "exit_levels": None
+            }
+        }
 
 
 # Singleton
