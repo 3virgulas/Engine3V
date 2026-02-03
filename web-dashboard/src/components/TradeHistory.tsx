@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 
 interface ExecutionLog {
     id: string;
@@ -27,7 +27,7 @@ export default function TradeHistory() {
 
     const fetchTrades = useCallback(async () => {
         try {
-            const response = await fetch(`${API_URL}/admin/trades`);
+            const response = await fetch('/api/admin/trades');
 
             if (!response.ok) {
                 throw new Error("Failed to fetch trades");
